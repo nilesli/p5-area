@@ -2,7 +2,7 @@
 (function (global) {
   const P5Area = global.P5Area = global.P5Area || {};
 
-  P5Area.VERSION = '20261126a3b';
+  P5Area.VERSION = '20261126a5';
   P5Area.STORAGE_KEY = 'p5area_v1';
   P5Area.SESSION_SIZE = 10;
   P5Area.UNIT = 'cm';
@@ -56,10 +56,9 @@
   P5Area.COLOR_TEXT = '#0F172A';
   P5Area.COLOR_EXTRA = '#64748B';
 
+  /* Student-facing about text only. Scope disclaimers (學習重點 1–2 / 不宣稱完整 5M1) stay in README, not the UI. */
   P5Area.CURRICULUM_ABOUT = [
-    '本 App 是小五面積 **温習**。正方形與長方形面積屬教育局 **4M2《面積（一）》**（小四已學），納入本 App 作先備温習，**不是小五新授內容**。小五單位 **5M1《面積（二）》** 的主要新授，是認識三角形和四邊形「底」與「對應高」，以及認識並運用 **平行四邊形、三角形、梯形** 的面積公式。',
-    '本 App **對齊 5M1 學習重點 1–2 的温習**（選公式、辨底與對應高、不誤用斜邊或多餘數據），並同時温習 4M2 的正方形與長方形公式。',
-    '**不宣稱已完整覆蓋 5M1**：第一期不做學習重點 3（以分割或填補求多邊形／複合圖形面積），亦不做由面積倒求邊長（教育局建議此類題宜於 6A1《簡易方程（二）》處理）。'
+    '本 App 是小五面積 **温習**。正方形與長方形面積屬教育局 **4M2《面積（一）》**（小四已學），納入本 App 作先備温習，**不是小五新授內容**。小五單位 **5M1《面積（二）》** 的主要新授，是認識三角形和四邊形「底」與「對應高」，以及認識並運用 **平行四邊形、三角形、梯形** 的面積公式。'
   ].join('\n\n');
 
   P5Area.DEID_TOOL_URL = 'https://nilesli.github.io/sped-deidentification/';

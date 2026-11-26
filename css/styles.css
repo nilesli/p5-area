@@ -1,4 +1,4 @@
-/* 小五面積温習 · v=20261125a2 */
+/* 小五面積温習 · v=20261126a5 */
 :root {
   --primary: #0D9488;
   --primary-dark: #0F766E;
@@ -57,6 +57,7 @@ a { color: var(--primary-dark); }
 }
 @media (orientation: portrait) and (max-width: 900px) {
   #portrait-hint { display: flex; }
+  #screen-practice.active { padding-bottom: 5.2rem; }
 }
 
 #app { min-height: 100dvh; }
@@ -112,12 +113,16 @@ a { color: var(--primary-dark); }
 }
 .start-hero { padding-top: 0.5rem; }
 .start-hero .mascot {
-  width: 140px; height: 140px; border-radius: 28px;
-  background: linear-gradient(145deg, #CCFBF1, #99F6E4);
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--shadow); margin-bottom: 1rem; overflow: hidden;
+  width: 176px; height: 250px;
+  background: transparent;
+  display: flex; align-items: flex-end; justify-content: center;
+  margin: 0 0 0.85rem; overflow: visible;
 }
-.start-hero .mascot img { width: 132px; height: 132px; object-fit: contain; display: block; }
+.start-hero .mascot img {
+  width: 176px; height: 250px;
+  object-fit: contain; object-position: center bottom;
+  display: block;
+}
 .start-hero h1 { margin: 0 0 0.4rem; font-size: 1.85rem; letter-spacing: -0.02em; }
 .subtitle { color: var(--muted); margin: 0 0 0.35rem; line-height: 1.5; }
 .teacher { color: var(--primary-dark); font-weight: 700; margin: 0 0 1rem; }
@@ -223,37 +228,110 @@ a { color: var(--primary-dark); }
 
 .template {
   font-size: 1.12rem; font-weight: 700; display: flex; flex-wrap: wrap;
-  align-items: flex-start; gap: 0.35rem 0.28rem; line-height: 1.3;
+  align-items: flex-start; gap: 0.3rem 0.22rem; line-height: 1.3;
   margin: 0.25rem 0 0.6rem;
 }
-.template > span { padding-top: 0.7rem; }
+.expr-template {
+  flex-direction: column;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  gap: 0.1rem;
+  width: 100%;
+}
+.expr-template > .tmpl-lead {
+  padding-top: 0;
+  padding-bottom: 0.1rem;
+}
+.expr-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 0.18rem 0.14rem;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.15rem;
+}
+.expr-row > .paren,
+.expr-row > .unit-tag,
+.expr-row > .tmpl-lead {
+  padding-top: 0.7rem;
+  flex-shrink: 0;
+}
+.paren {
+  font-size: 1.55rem; font-weight: 900; line-height: 1; color: var(--text);
+}
 .blank {
   display: inline-flex; flex-direction: column; align-items: center;
-  min-width: 64px;
+  min-width: 56px;
 }
 .blank-btn {
-  min-width: 64px; min-height: 48px; border: 2px solid var(--primary);
-  border-radius: 10px; background: #F0FDFA; font-weight: 800; font-size: 1.2rem;
-  padding: 0.2rem 0.4rem;
+  width: 48px; height: 48px; min-width: 48px; min-height: 48px;
+  border: 2px solid var(--primary);
+  border-radius: 8px; background: #F0FDFA; font-weight: 800; font-size: 1.2rem;
+  padding: 0;
 }
 .blank-btn.is-active { box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.3); background: #fff; }
 .blank-btn.is-correct { border-color: var(--success); background: var(--success-bg); }
 .blank-btn.is-reveal { border-color: var(--base-blue); background: #EFF6FF; }
-.blank-label { font-size: 0.75rem; color: var(--muted); font-weight: 700; margin-top: 2px; }
-.unit-tag { color: var(--muted); font-weight: 600; font-size: 0.95rem; margin-left: 0.25rem; }
+.blank-label { font-size: 0.75rem; color: var(--muted); font-weight: 700; margin-top: 4px; min-height: 1.1em; }
+.unit-tag { color: var(--muted); font-weight: 600; font-size: 0.95rem; margin-left: 0.15rem; }
+.op-wrap {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 48px; flex-shrink: 0;
+}
+.blank { flex-shrink: 0; }
+.op-btn {
+  width: 42px; height: 42px; min-width: 42px; min-height: 42px;
+  border-radius: 50%; border: 2px solid var(--primary);
+  background: #F0FDFA; font-weight: 800; font-size: 1.25rem;
+  padding: 0; line-height: 1;
+}
+.op-btn.is-active { box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.3); background: #fff; }
+.op-btn.has-value { background: #fff; }
+.op-btn.is-reveal { border-color: var(--base-blue); background: #EFF6FF; }
 
 .keypad {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem;
-  margin-top: 0.3rem;
+  margin-top: 0.35rem;
 }
 .keypad button {
   min-height: 48px; border-radius: 12px; border: 2px solid var(--border);
   background: #fff; font-weight: 800; font-size: 1.15rem;
 }
 .keypad button:hover { border-color: var(--primary); }
+.keypad button:focus-visible { box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.3); }
 .keypad .key-wide { grid-column: span 1; }
 .keypad .key-ok { grid-column: 1 / -1; background: var(--primary); color: #fff; border-color: var(--primary); }
 .keypad .key-del, .keypad .key-clear { font-size: 0.95rem; background: #F8FAFC; }
+
+.op-picker {
+  display: flex; flex-wrap: wrap; gap: 0.55rem; justify-content: center;
+  margin: 0.45rem 0 0.2rem;
+}
+.op-picker button {
+  width: 56px; height: 56px; min-width: 56px; min-height: 56px;
+  border-radius: 50%; border: 2px solid var(--border);
+  background: #fff; font-weight: 800; font-size: 1.45rem;
+}
+.op-picker button:hover, .op-picker button:focus-visible {
+  border-color: var(--primary); background: #F0FDFA;
+}
+.fill-confirm {
+  width: 100%; margin-top: 0.7rem;
+}
+
+@media (max-width: 700px) {
+  .blank-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; font-size: 0.95rem; }
+  .op-btn { width: 32px; height: 32px; min-width: 32px; min-height: 32px; font-size: 1rem; }
+  .op-wrap, .blank { min-width: 32px; }
+  .op-wrap { height: 36px; }
+  .paren { font-size: 1.25rem; padding-top: 0.45rem; }
+  .expr-row > .paren, .expr-row > .unit-tag { padding-top: 0.45rem; }
+  .unit-tag { font-size: 0.82rem; }
+  .expr-row { gap: 0.1rem 0.08rem; }
+  .template { font-size: 0.95rem; gap: 0.18rem 0.1rem; }
+}
 
 .feedback {
   border-radius: 12px; padding: 0.75rem 0.9rem; line-height: 1.55; font-weight: 600;
@@ -312,8 +390,10 @@ a { color: var(--primary-dark); }
   .figure-stage { max-height: 46vh; min-height: 220px; }
   .review-grid { grid-template-columns: 1fr; }
   .mascot-feedback { width: 56px; height: 56px; }
-  .start-hero .mascot { width: 110px; height: 110px; }
-  .start-hero .mascot img { width: 102px; height: 102px; }
+  .practice-right .pane, .practice-right .feedback { padding-right: 8px; }
+  #fill-pane.pane { padding-right: 0; }
+  .start-hero .mascot { width: 132px; height: 190px; }
+  .start-hero .mascot img { width: 132px; height: 190px; }
 }
 
 @media (orientation: portrait) and (max-width: 900px) {

@@ -640,10 +640,14 @@
     return q;
   }
 
-  /* Advanced triangle: exactly two sides (the corresponding base + one other
-     integer side) plus the corresponding height. Built from a Pythagorean
-     foot/height/side so the labeled non-base side is exact, never rounded.
-     Right-triangle morphs are avoided so the height is clearly not a side. */
+  /* Advanced triangle: the corresponding base + height, plus one other
+     integer side when that side's measurement does not overlap the height.
+     If the extra side would crowd the altitude (common on obtuse figures
+     with an exterior height), omit it; base + height alone is acceptable.
+     Built from a Pythagorean foot/height/side so a labeled non-base side
+     is exact, never rounded. Right-triangle morphs are avoided so the
+     height is clearly not a side. If the base itself would overlap the
+     height, skip the candidate and try another. */
   function makeIdentifyTriangle(rnd, morph) {
     const obtuse = morph.indexOf('obtuse') === 0;
     const baseSide = morph.indexOf('baseSide') !== -1;
@@ -704,11 +708,35 @@
         if (isEdge(heightSeg.a, heightSeg.b, verts)) continue;
 
         const ra = rightAngleAt(footPt, sub(B, A), sub(C, footPt));
-        const dims = [
-          makeDim(A, B, base, '底', false, verts),
-          makeDim(C, footPt, height, '高', false, verts),
-          dimForLine(sideA, sideB, side, '', verts)
-        ];
+        const heightDim = makeDim(C, footPt, height, '高', false, verts);
+        const baseCand = {
+          edge: [A, B], kind: 'base', keepPreferred: true,
+          dim: makeDim(A, B, base, '底', false, verts)
+        };
+        const otherCand = {
+          edge: [sideA, sideB], kind: 'otherSide', keepPreferred: false,
+          dim: dimForLine(sideA, sideB, side, '', verts)
+        };
+        const geo = {
+          vertices: verts,
+          extras: [],
+          heightSeg: heightSeg,
+          rightAngle: ra,
+          bases: [{ a: A, b: B, role: '底' }]
+        };
+        const picked = selectClearSides([baseCand, otherCand], heightSeg, [heightDim], geo);
+        /* Combined layout can still tighten a pair that was clear alone. */
+        if (picked.kept.length === 2) {
+          const rows = combinedHeightGaps(geo, [heightDim], picked.kept);
+          if (rows.some(function (r) { return r.gap < MIN_HEIGHT_LABEL_GAP; })) {
+            picked.omitted = picked.omitted.concat(picked.kept.filter(function (c) { return c.kind !== 'base'; }));
+            picked.kept = picked.kept.filter(function (c) { return c.kind === 'base'; });
+          }
+        }
+        const keptBase = picked.kept.some(function (c) { return c.kind === 'base'; });
+        if (!keptBase) continue;
+        const dims = [heightDim].concat(picked.kept.map(function (c) { return c.dim; }));
+        const omittedKinds = picked.omitted.map(function (c) { return c.kind; });
         const q = {
           shape: 'triangle',
           morph: morph,
@@ -725,7 +753,8 @@
         };
         return finishIdentify(q, 'triangle-two-sides',
           [{ type: 'side', value: side }],
-          { base: base, height: height, otherSide: side });
+          { base: base, height: height, otherSide: side,
+            omitted: omittedKinds[0] || '', omittedKinds: omittedKinds });
       }
     }
     return null;
@@ -797,8 +826,170 @@
     return out;
   }
 
-  /* Advanced trapezium: all four side lengths plus the corresponding height.
-     Exact integer 上底、下底、兩腰、高; neither leg equals the height. */
+
+  function pointSegDist(p, a, b) {
+    const ab = sub(b, a);
+    const L2 = dot(ab, ab) || 1e-9;
+    let tt = dot(sub(p, a), ab) / L2;
+    tt = Math.max(0, Math.min(1, tt));
+    return dist(p, add(a, mul(ab, tt)));
+  }
+
+  function segSegDist(a, b, c, d) {
+    return Math.min(
+      pointSegDist(a, c, d), pointSegDist(b, c, d),
+      pointSegDist(c, a, b), pointSegDist(d, a, b)
+    );
+  }
+
+  function midPt(a, b) { return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; }
+
+  /* A side crowds the height when its outward dimension band runs toward
+     the altitude (typical: the slant adjoining an exterior height).
+     Sharing a vertex with the dashed base-extension is not enough. */
+  function sideCrowdsHeight(edge, heightSeg, verts) {
+    const out = outwardFromEdge(edge[0], edge[1], centroid(verts));
+    const midE = midPt(edge[0], edge[1]);
+    const hMid = midPt(heightSeg.a, heightSeg.b);
+    const faces = dot(out, sub(hMid, midE)) > 0;
+    const dH = segSegDist(edge[0], edge[1], heightSeg.a, heightSeg.b);
+    let bandD = Infinity;
+    const offsets = [0.6, 1.2, 1.8, 2.4];
+    for (let i = 0; i < offsets.length; i++) {
+      const a2 = add(edge[0], mul(out, offsets[i]));
+      const b2 = add(edge[1], mul(out, offsets[i]));
+      bandD = Math.min(bandD, segSegDist(a2, b2, heightSeg.a, heightSeg.b));
+    }
+    return (faces && dH < 1.25) || (faces && bandD < 1.25);
+  }
+
+  function labelBoxGap(a, b) {
+    const gapX = (a.x + a.w <= b.x) ? b.x - (a.x + a.w)
+      : (b.x + b.w <= a.x) ? a.x - (b.x + b.w) : 0;
+    const gapY = (a.y + a.h <= b.y) ? b.y - (a.y + a.h)
+      : (b.y + b.h <= a.y) ? a.y - (b.y + b.h) : 0;
+    const noOverlap = (a.x + a.w <= b.x) || (b.x + b.w <= a.x) ||
+      (a.y + a.h <= b.y) || (b.y + b.h <= a.y);
+    if (!noOverlap) return 0;
+    if (gapX === 0 || gapY === 0) return gapX + gapY;
+    return Math.hypot(gapX, gapY);
+  }
+
+  /* Side labels closer than this to the height label are treated as overlapping. */
+  const MIN_HEIGHT_LABEL_GAP = 28;
+
+  function gapOfDimToHeight(geo, heightDims, dim) {
+    if (!P5Area.svg || !P5Area.svg.render) return Infinity;
+    const trial = Object.assign({}, geo, {
+      dimensions: heightDims.concat([dim]),
+      extras: geo.extras || []
+    });
+    P5Area.svg.render(trial, { reveal: false });
+    const labels = (P5Area.svg.lastLayout && P5Area.svg.lastLayout.labels) || [];
+    const hLabs = labels.filter(function (l) { return l.role === '高'; });
+    const sLabs = labels.filter(function (l) { return l.role !== '高'; });
+    let gap = Infinity;
+    hLabs.forEach(function (h) {
+      sLabs.forEach(function (s) { gap = Math.min(gap, labelBoxGap(h.box, s.box)); });
+    });
+    return gap;
+  }
+
+  function combinedHeightGaps(geo, heightDims, kept) {
+    if (!P5Area.svg || !P5Area.svg.render) return [];
+    const trial = Object.assign({}, geo, {
+      dimensions: heightDims.concat(kept.map(function (c) { return c.dim; })),
+      extras: geo.extras || []
+    });
+    P5Area.svg.render(trial, { reveal: false });
+    const labels = (P5Area.svg.lastLayout && P5Area.svg.lastLayout.labels) || [];
+    const hLabs = labels.filter(function (l) { return l.role === '高'; });
+    const sLabs = labels.filter(function (l) { return l.role !== '高'; });
+    return sLabs.map(function (s) {
+      let gap = Infinity;
+      hLabs.forEach(function (h) { gap = Math.min(gap, labelBoxGap(h.box, s.box)); });
+      return { text: s.text, role: s.role, box: s.box, gap: gap };
+    });
+  }
+
+  function matchKeptToGaps(kept, gapRows) {
+    const used = {};
+    return kept.map(function (c) {
+      let best = -1, bestD = Infinity;
+      gapRows.forEach(function (row, i) {
+        if (used[i]) return;
+        const txt = String(row.text || '');
+        if (txt.indexOf(String(c.dim.value)) === -1) return;
+        if (row.gap < bestD) { bestD = row.gap; best = i; }
+      });
+      if (best < 0) {
+        gapRows.forEach(function (row, i) {
+          if (used[i]) return;
+          if (best < 0 || row.gap < bestD) { bestD = row.gap; best = i; }
+        });
+      }
+      if (best >= 0) used[best] = true;
+      return { cand: c, gap: best >= 0 ? gapRows[best].gap : Infinity };
+    });
+  }
+
+  /* Keep up to three sides that do not overlap the height. Two sides + height
+     is allowed when a third side would crowd the altitude. Prefer keeping
+     pedagogically useful sides (bases) when we have a spare to drop. */
+  function selectClearSides(sideCands, heightSeg, heightDims, geo) {
+    const verts = geo.vertices;
+    const crowded = [];
+    const clear = [];
+    sideCands.forEach(function (c) {
+      if (sideCrowdsHeight(c.edge, heightSeg, verts)) crowded.push(c);
+      else clear.push(c);
+    });
+    const cleared = [];
+    clear.forEach(function (c) {
+      const gap = gapOfDimToHeight(geo, heightDims, c.dim);
+      if (gap < MIN_HEIGHT_LABEL_GAP) crowded.push(c);
+      else cleared.push(c);
+    });
+
+    function closeness(c) {
+      const g = gapOfDimToHeight(geo, heightDims, c.dim);
+      const dH = segSegDist(c.edge[0], c.edge[1], heightSeg.a, heightSeg.b);
+      return (Number.isFinite(g) ? g : 1000) + dH * 0.01;
+    }
+
+    let kept = cleared.slice();
+    while (kept.length > 3) {
+      const optional = kept.filter(function (c) { return !c.keepPreferred; });
+      const pool = optional.length ? optional : kept;
+      let worst = pool[0], worstScore = closeness(worst);
+      pool.forEach(function (c) {
+        const s = closeness(c);
+        if (s < worstScore) { worst = c; worstScore = s; }
+      });
+      crowded.push(worst);
+      kept = kept.filter(function (c) { return c !== worst; });
+    }
+
+    let guard = 0;
+    while (kept.length > 2 && guard++ < 4) {
+      const rows = combinedHeightGaps(geo, heightDims, kept);
+      if (!rows.length) break;
+      const mapped = matchKeptToGaps(kept, rows);
+      let worst = null, worstGap = Infinity;
+      mapped.forEach(function (m) {
+        if (m.gap < worstGap) { worstGap = m.gap; worst = m.cand; }
+      });
+      if (worstGap >= MIN_HEIGHT_LABEL_GAP) break;
+      crowded.push(worst);
+      kept = kept.filter(function (c) { return c !== worst; });
+    }
+
+    return { kept: kept, omitted: crowded };
+  }
+
+  /* Advanced trapezium: label sides that do not overlap the height
+     (prefer both bases + one clear leg; drop a base only if it crowds
+     the altitude). Two sides + height is allowed if needed for clearance. */
   function makeIdentifyTrapezium(rnd, morph) {
     const tilt = morph.indexOf('tilt') !== -1;
     const wantLongTop = morph.indexOf('longTop') !== -1;
@@ -865,13 +1056,19 @@
       if (isEdge(heightSeg.a, heightSeg.b, verts)) continue;
 
       const ra = rightAngleAt(heightSeg.b, sub(Vb, Va), sub(heightSeg.a, heightSeg.b));
-      const dims = [
-        makeDim(Vd, Vc, top, '上底', false, verts),
-        makeDim(Va, Vb, bottom, '下底', false, verts),
-        makeDim(heightSeg.a, heightSeg.b, height, '高', false, verts),
-        dimForLine(Va, Vd, s.leftLeg, '', verts),
-        dimForLine(Vb, Vc, s.rightLeg, '', verts)
+      const heightDim = makeDim(heightSeg.a, heightSeg.b, height, '高', false, verts);
+      const sideCands = [
+        { edge: [Vd, Vc], kind: 'topBase', keepPreferred: true, dim: makeDim(Vd, Vc, top, '上底', false, verts) },
+        { edge: [Va, Vb], kind: 'bottomBase', keepPreferred: true, dim: makeDim(Va, Vb, bottom, '下底', false, verts) },
+        { edge: [Va, Vd], kind: 'leftLeg', keepPreferred: false, dim: dimForLine(Va, Vd, s.leftLeg, '', verts) },
+        { edge: [Vb, Vc], kind: 'rightLeg', keepPreferred: false, dim: dimForLine(Vb, Vc, s.rightLeg, '', verts) }
       ];
+      const picked = selectClearSides(sideCands, heightSeg, [heightDim], {
+        vertices: verts, extras: [], heightSeg: heightSeg, rightAngle: ra,
+        bases: [{ a: Vd, b: Vc }, { a: Va, b: Vb }]
+      });
+      const dims = [heightDim].concat(picked.kept.map(function (c) { return c.dim; }));
+      const omittedKinds = picked.omitted.map(function (c) { return c.kind; });
       const q = {
         shape: 'trapezium',
         morph: morph,
@@ -893,16 +1090,20 @@
         { type: 'leg', value: s.leftLeg },
         { type: 'leg', value: s.rightLeg }
       ];
-      return finishIdentify(q, 'trapezium-four-sides', dists, {
+      return finishIdentify(q, 'trapezium-three-sides', dists, {
         topBase: top, bottomBase: bottom, height: height,
-        leftLeg: s.leftLeg, rightLeg: s.rightLeg
+        leftLeg: s.leftLeg, rightLeg: s.rightLeg,
+        omitted: omittedKinds[0] || '',
+        omittedKinds: omittedKinds
       });
     }
     return null;
   }
 
-  /* Advanced parallelogram: all four sides (both bases + both adjacent sides)
-     plus the corresponding height. Slant is already an integer by construction. */
+  /* Advanced parallelogram: omit any side whose measurement would overlap
+     the height (e.g. the slant adjoining an exterior altitude). Keep up to
+     three clear sides; two sides + height is acceptable. Opposite sides
+     remain equal, so students can still identify the corresponding base. */
   function makeIdentifyParallelogram(rnd, morph) {
     const q = makeParallelogram(rnd, morph);
     if (!q || !q.slant) return null;
@@ -928,18 +1129,22 @@
     if (isEdge(q.geometry.heightSeg.a, q.geometry.heightSeg.b, v)) return null;
 
     const heightDims = q.geometry.dimensions.filter(function (d) { return d.role === '高'; });
-    const dims = heightDims.slice();
+    const sideCands = [];
     baseEdges.forEach(function (e) {
-      dims.push(makeDim(e[0], e[1], base, '底', false, v));
+      sideCands.push({ edge: e, kind: 'base', keepPreferred: true, dim: makeDim(e[0], e[1], base, '底', false, v) });
     });
     slantEdges.forEach(function (e) {
-      dims.push(dimForLine(e[0], e[1], slant, '', v));
+      sideCands.push({ edge: e, kind: 'slant', keepPreferred: false, dim: dimForLine(e[0], e[1], slant, '', v) });
     });
+    const picked = selectClearSides(sideCands, q.geometry.heightSeg, heightDims, q.geometry);
+    const dims = heightDims.slice();
+    picked.kept.forEach(function (c) { dims.push(c.dim); });
+    const omittedKinds = picked.omitted.map(function (c) { return c.kind; });
     q.geometry.dimensions = dims;
     q.geometry.extras = [];
-    return finishIdentify(q, 'parallelogram-four-sides',
+    return finishIdentify(q, 'parallelogram-three-sides',
       [{ type: 'slant', value: slant }, { type: 'slant', value: slant }],
-      { base: base, height: height, slant: slant });
+      { base: base, height: height, slant: slant, omitted: omittedKinds[0] || '', omittedKinds: omittedKinds });
   }
 
   function makeIdentifyShape(shape, morph, rnd) {

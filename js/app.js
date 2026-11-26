@@ -12,7 +12,8 @@
     phase: 'formula', /* formula | formula-feedback | fill | fill-feedback */
     selectedFormula: null,
     fills: {},
-    activeBlank: null,
+    activeSlot: null,
+    pad: null,
     questionStartedAt: 0,
     sessionStartedAt: 0,
     results: [],
@@ -66,9 +67,31 @@
 
   function formatFills(shape, values) {
     if (!values) return '';
+    if (P5Area.scoring.isFillExpression(values)) {
+      return P5Area.scoring.formatExpression(shape, values);
+    }
     return P5Area.scoring.fillBlanks(shape).map(function (b) {
       return b.label + ' ' + (values[b.id] == null || values[b.id] === '' ? '—' : values[b.id]);
     }).join('、');
+  }
+
+  function emptyExpression(shape) {
+    const spec = P5Area.scoring.expressionSpec(shape);
+    return {
+      nums: spec.numHints.map(function () { return ''; }),
+      ops: Array(spec.opCount).fill('')
+    };
+  }
+
+  function slotOrder(shape) {
+    const spec = P5Area.scoring.expressionSpec(shape);
+    const order = [];
+    const n = spec.numHints.length;
+    for (let i = 0; i < n; i++) {
+      order.push({ kind: 'num', i: i });
+      if (i < spec.opCount) order.push({ kind: 'op', i: i });
+    }
+    return order;
   }
 
   function currentQuestion() {
@@ -118,7 +141,8 @@
     if (state.phase === 'formula') setMascot('think');
     state.selectedFormula = null;
     state.fills = {};
-    state.activeBlank = null;
+    state.activeSlot = null;
+    state.pad = null;
     const reveal = state.phase === 'formula-feedback' || state.phase === 'fill-feedback';
     paintFigure(reveal);
     renderFormulaPane();
@@ -161,29 +185,64 @@
   }
 
   function fillTemplateHTML(q, mode) {
-    /* mode: edit | reveal */
-    const blanks = P5Area.scoring.fillBlanks(q.shape);
-    const correct = P5Area.scoring.correctFillValues(q);
-    const tokens = {
-      square: ['面積 ＝ ', { id: 'side1' }, ' × ', { id: 'side2' }],
-      rectangle: ['面積 ＝ ', { id: 'length' }, ' × ', { id: 'width' }],
-      parallelogram: ['面積 ＝ ', { id: 'base' }, ' × ', { id: 'height' }],
-      triangle: ['面積 ＝ ', { id: 'base' }, ' × ', { id: 'height' }, ' ÷ 2'],
-      trapezium: ['面積 ＝（', { id: 'topBase' }, ' ＋ ', { id: 'bottomBase' }, '）× ', { id: 'height' }, ' ÷ 2']
-    };
-    let html = '<div class="template" aria-label="算式模板">';
-    (tokens[q.shape] || []).forEach(function (tok) {
-      if (typeof tok === 'string') { html += '<span>' + tok + '</span>'; return; }
-      const meta = blanks.filter(function (b) { return b.id === tok.id; })[0];
-      const shown = mode === 'reveal' ? String(correct[tok.id]) : (state.fills[tok.id] || '');
-      const active = state.activeBlank === tok.id && mode === 'edit';
+    /* mode: edit | reveal — mid/high operator-entry: □ ○ □, with fixed trapezium parentheses */
+    const spec = P5Area.scoring.expressionSpec(q.shape);
+    const correct = P5Area.scoring.correctFillExpression(q);
+    const rec = state.results[state.index];
+    const useStudent = mode === 'reveal' && rec && rec.fillOk;
+    const student = rec && rec.fillValues;
+    let shownExpr;
+    if (useStudent && student) {
+      shownExpr = P5Area.scoring.isFillExpression(student)
+        ? student
+        : P5Area.scoring.legacyValuesToExpression(q, student);
+    } else if (mode === 'reveal') {
+      shownExpr = correct;
+    } else {
+      shownExpr = state.fills && P5Area.scoring.isFillExpression(state.fills)
+        ? state.fills
+        : emptyExpression(q.shape);
+    }
+    const nums = shownExpr.nums || [];
+    const ops = shownExpr.ops || [];
+
+    function numBtn(i) {
+      const meta = { label: spec.numHints[i] };
+      const raw = nums[i];
+      const shown = (raw == null || raw === '') ? '' : String(raw);
+      const active = mode === 'edit' && state.activeSlot && state.activeSlot.kind === 'num' && state.activeSlot.i === i;
       let cls = 'blank-btn' + (active ? ' is-active' : '');
       if (mode === 'reveal') cls += ' is-reveal';
-      html += '<span class="blank"><button type="button" class="' + cls + '" data-blank="' + tok.id + '"' +
-        (mode === 'edit' ? '' : ' disabled') + '>' + (shown || '　') + '</button>' +
-        '<span class="blank-label">' + meta.label + '</span></span>';
-    });
-    html += '<span class="unit-tag">（' + P5Area.UNIT_SQ + '）</span></div>';
+      return '<span class="blank"><button type="button" class="' + cls + '" data-slot="num" data-i="' + i + '"' +
+        (mode === 'edit' ? '' : ' disabled') + ' aria-label="數字空格，' + meta.label + '">' +
+        (shown || '　') + '</button><span class="blank-label">' + meta.label + '</span></span>';
+    }
+    function opBtn(i) {
+      const raw = ops[i];
+      const shown = raw ? String(raw) : '';
+      const active = mode === 'edit' && state.activeSlot && state.activeSlot.kind === 'op' && state.activeSlot.i === i;
+      let cls = 'op-btn' + (active ? ' is-active' : '') + (shown ? ' has-value' : '');
+      if (mode === 'reveal') cls += ' is-reveal';
+      return '<span class="op-wrap"><button type="button" class="' + cls + '" data-slot="op" data-i="' + i + '"' +
+        (mode === 'edit' ? '' : ' disabled') + ' aria-label="運算符號空格">' +
+        (shown || '') + '</button></span>';
+    }
+
+    let html = '<div class="template expr-template" aria-label="算式模板">';
+    html += '<span class="tmpl-lead">面積 ＝</span>';
+    html += '<div class="expr-row">';
+    if (spec.parens) {
+      html += '<span class="paren" aria-hidden="true">（</span>';
+      html += numBtn(0) + opBtn(0) + numBtn(1);
+      html += '<span class="paren" aria-hidden="true">）</span>';
+      html += opBtn(1) + numBtn(2) + opBtn(2) + numBtn(3);
+    } else if (spec.opCount === 2) {
+      html += numBtn(0) + opBtn(0) + numBtn(1) + opBtn(1) + numBtn(2);
+    } else {
+      html += numBtn(0) + opBtn(0) + numBtn(1);
+    }
+    html += '<span class="unit-tag">（' + P5Area.UNIT_SQ + '）</span>';
+    html += '</div></div>';
     return html;
   }
 
@@ -194,59 +253,124 @@
     pane.hidden = !show;
     if (!show) { pane.innerHTML = ''; return; }
     const mode = state.phase === 'fill' ? 'edit' : 'reveal';
-    if (mode === 'edit' && !state.activeBlank) {
-      state.activeBlank = P5Area.scoring.fillBlanks(q.shape)[0].id;
+    if (mode === 'edit') {
+      if (!state.fills || !P5Area.scoring.isFillExpression(state.fills)) {
+        state.fills = emptyExpression(q.shape);
+      }
+      if (!state.activeSlot) state.activeSlot = { kind: 'num', i: 0 };
+      if (state.pad !== 'num' && state.pad !== 'op' && state.pad !== 'none') {
+        state.pad = state.activeSlot.kind === 'op' ? 'op' : 'num';
+      }
     }
     let html = fillTemplateHTML(q, mode);
     if (mode === 'edit') {
-      html += '<div class="keypad" role="group" aria-label="數字鍵盤">' +
-        [1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (n) {
-          return '<button type="button" data-k="' + n + '">' + n + '</button>';
-        }).join('') +
-        '<button type="button" data-k="del" class="key-del">刪除</button>' +
-        '<button type="button" data-k="0">0</button>' +
-        '<button type="button" data-k="clear" class="key-clear">清除</button>' +
-        '<button type="button" data-k="ok" class="key-ok">確定</button></div>';
+      if (state.pad === 'num') {
+        html += '<div class="keypad" role="group" aria-label="數字鍵盤">' +
+          [1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (n) {
+            return '<button type="button" data-k="' + n + '">' + n + '</button>';
+          }).join('') +
+          '<button type="button" data-k="del" class="key-del">刪除</button>' +
+          '<button type="button" data-k="0">0</button>' +
+          '<button type="button" data-k="clear" class="key-clear">清除</button></div>';
+      } else if (state.pad === 'op') {
+        html += '<div class="op-picker" role="group" aria-label="運算符號">' +
+          ['＋', '－', '×', '÷'].map(function (op) {
+            return '<button type="button" data-op="' + op + '" aria-label="' + op + '">' + op + '</button>';
+          }).join('') + '</div>';
+      }
+      html += '<button type="button" class="btn btn-primary btn-lg fill-confirm" id="btn-confirm-fill">確定</button>';
     }
     pane.innerHTML = html;
     if (mode === 'edit') {
-      $$('.blank-btn', pane).forEach(function (btn) {
+      $$('[data-slot]', pane).forEach(function (btn) {
         btn.addEventListener('click', function () {
-          state.activeBlank = btn.getAttribute('data-blank');
+          const kind = btn.getAttribute('data-slot');
+          const i = parseInt(btn.getAttribute('data-i'), 10);
+          state.activeSlot = { kind: kind, i: i };
+          state.pad = kind === 'op' ? 'op' : 'num';
           renderFillPane();
         });
       });
       $$('.keypad button', pane).forEach(function (btn) {
         btn.addEventListener('click', function () { handleKey(btn.getAttribute('data-k')); });
       });
+      $$('.op-picker button', pane).forEach(function (btn) {
+        btn.addEventListener('click', function () { handleOp(btn.getAttribute('data-op')); });
+      });
+      const ok = $('#btn-confirm-fill', pane);
+      if (ok) ok.addEventListener('click', confirmFill);
+    }
+  }
+
+  function ensureExprFills(shape) {
+    if (!state.fills || !P5Area.scoring.isFillExpression(state.fills)) {
+      state.fills = emptyExpression(shape);
+    }
+  }
+
+  function advanceAfter(shape, kind, i) {
+    const order = slotOrder(shape);
+    let idx = -1;
+    for (let k = 0; k < order.length; k++) {
+      if (order[k].kind === kind && order[k].i === i) { idx = k; break; }
+    }
+    function isEmpty(slot) {
+      if (slot.kind === 'num') return !String(state.fills.nums[slot.i] || '');
+      return !state.fills.ops[slot.i];
+    }
+    let next = null;
+    for (let k = idx + 1; k < order.length; k++) {
+      if (isEmpty(order[k])) { next = order[k]; break; }
+    }
+    if (!next) {
+      for (let k = 0; k < order.length; k++) {
+        if (isEmpty(order[k])) { next = order[k]; break; }
+      }
+    }
+    if (next) {
+      state.activeSlot = { kind: next.kind, i: next.i };
+      state.pad = next.kind === 'op' ? 'op' : 'num';
     }
   }
 
   function handleKey(k) {
     const q = currentQuestion();
-    const blanks = P5Area.scoring.fillBlanks(q.shape);
-    if (!state.activeBlank) state.activeBlank = blanks[0].id;
-    const cur = String(state.fills[state.activeBlank] || '');
+    ensureExprFills(q.shape);
+    if (!state.activeSlot || state.activeSlot.kind !== 'num') {
+      state.activeSlot = { kind: 'num', i: 0 };
+    }
+    const i = state.activeSlot.i;
+    const cur = String(state.fills.nums[i] || '');
     if (k === 'ok') { confirmFill(); return; }
     if (k === 'clear') {
-      state.fills[state.activeBlank] = '';
+      state.fills.nums[i] = '';
       renderFillPane();
       return;
     }
     if (k === 'del') {
-      state.fills[state.activeBlank] = cur.slice(0, -1);
+      state.fills.nums[i] = cur.slice(0, -1);
       renderFillPane();
       return;
     }
     if (!/^\d$/.test(k)) return;
     if (cur === '' && k === '0') return;
     if (cur.length >= 2) return;
-    state.fills[state.activeBlank] = cur + k;
-    if ((cur + k).length >= 2) {
-      const ids = blanks.map(function (b) { return b.id; });
-      const idx = ids.indexOf(state.activeBlank);
-      if (idx >= 0 && idx < ids.length - 1) state.activeBlank = ids[idx + 1];
+    state.fills.nums[i] = cur + k;
+    if ((cur + k).length >= 2) advanceAfter(q.shape, 'num', i);
+    renderFillPane();
+  }
+
+  function handleOp(op) {
+    const q = currentQuestion();
+    ensureExprFills(q.shape);
+    const norm = P5Area.scoring.normalizeOp(op);
+    if (!norm) return;
+    if (!state.activeSlot || state.activeSlot.kind !== 'op') {
+      state.activeSlot = { kind: 'op', i: 0 };
     }
+    const i = state.activeSlot.i;
+    state.fills.ops[i] = norm;
+    advanceAfter(q.shape, 'op', i);
     renderFillPane();
   }
 
@@ -272,7 +396,11 @@
       html += '<p class="legend-note">圖中：<span class="c-base">藍線＝底</span>' + baseNote + '，<span class="c-height">紅線＝對應高</span>；並有文字標籤。</p>';
     }
     if (isFill && r.fillOk) {
-      html += '<div class="fb-formula">正確填法已顯示在算式。</div>';
+      if (q.shape === 'triangle' && P5Area.scoring.isRightTriangle(q)) {
+        html += '<div class="fb-formula">直角三角形中，形成直角的兩條邊都可以做底或高；兩種次序都正確。</div>';
+      } else {
+        html += '<div class="fb-formula">正確填法已顯示在算式。</div>';
+      }
     } else if (isFill && !r.fillOk) {
       html += '<div class="fb-formula">正確填法已填入空格，請對照圖中的底和高。</div>';
     }
@@ -356,8 +484,9 @@
     const rec = state.results[state.index];
     if (rec) rec.gotoFill = false;
     state.phase = 'fill';
-    state.fills = {};
-    state.activeBlank = P5Area.scoring.fillBlanks(currentQuestion().shape)[0].id;
+    state.fills = emptyExpression(currentQuestion().shape);
+    state.activeSlot = { kind: 'num', i: 0 };
+    state.pad = 'num';
     startQuestionTimer();
     setMascot('point');
     updatePrompt();
@@ -384,6 +513,7 @@
     rec.fillSkipped = false;
     rec.usedDistractor = chk.reason === 'distractor';
     rec.fillValues = Object.assign({}, state.fills);
+    rec.fillSwapped = !!chk.swapped;
     rec.errorType = rec.errorType || (chk.ok ? '' : chk.reason);
     rec.feedbackText = chk.message;
     rec.timeSec = (rec._formulaTime || 0) + fillTime;
@@ -415,13 +545,17 @@
     const tips = [];
     const count = function (pred) { return results.filter(pred).length; };
     const nSq = count(function (r) { return r.errorType === 'square-as-rectangle'; });
-    const nTri = count(function (r) { return r.errorType === 'triangle-no-half'; });
+    const nTri = count(function (r) {
+      return r.errorType === 'triangle-no-half' || r.errorType === 'missing-half' || r.errorType === 'wrong-half';
+    });
     const nSwap = count(function (r) { return r.errorType === 'base-height-swap'; });
     const nDist = count(function (r) { return r.usedDistractor; });
     const nTrap = count(function (r) { return r.errorType === 'trapezium-wrong-form' || r.errorType === 'trap-height-in-bases'; });
     if (nSq) tips.push('有 ' + nSq + ' 題把正方形選成「長×闊」。正方形四邊相等，要用邊長×邊長。');
-    if (nTri) tips.push('有 ' + nTri + ' 題三角形不記得 ÷2。');
-    if (nSwap) tips.push('有 ' + nSwap + ' 題把底和高調轉了。高一定垂直於對應的底，而且有直角標記。');
+    if (nTri) tips.push('有 ' + nTri + ' 題不記得 ÷2，或誤用 ×2。三角形和梯形的面積都要除以 2。');
+    const nHyp = count(function (r) { return r.errorType === 'hypotenuse'; });
+    if (nSwap) tips.push('有 ' + nSwap + ' 題把底和高調轉了。高必須垂直於所選的底，並帶有直角標記。直角三角形則例外：形成直角的兩條邊都可以做底或高。');
+    if (nHyp) tips.push('有 ' + nHyp + ' 題用了直角三角形的斜邊來配底和高。形成直角的兩條邊才可以互相做底或高。');
     if (nDist) tips.push('有 ' + nDist + ' 題用了多餘數據（可能是斜邊、腰、對角線）。');
     if (nTrap) tips.push('有梯形題公式或上底下底／高填錯。梯形要用（上底＋下底）×高÷2。');
     if (!tips.length && level) {
@@ -725,7 +859,31 @@
     confirmFormula: confirmFormula,
     enterFill: enterFill,
     setFill: function (values) {
-      state.fills = Object.assign({}, values);
+      const q = currentQuestion();
+      if (P5Area.scoring.isFillExpression(values)) {
+        state.fills = {
+          nums: values.nums.map(function (v) { return v == null ? '' : String(v); }),
+          ops: values.ops.map(function (o) { return P5Area.scoring.normalizeOp(o) || o || ''; })
+        };
+      } else if (q) {
+        const expr = P5Area.scoring.legacyValuesToExpression(q, values || {});
+        state.fills = {
+          nums: expr.nums.map(function (v) { return v == null ? '' : String(v); }),
+          ops: expr.ops.slice()
+        };
+      } else {
+        state.fills = Object.assign({}, values);
+      }
+      renderFillPane();
+    },
+    openFillPad: function (kind, i) {
+      if (!kind || kind === 'none') {
+        state.pad = 'none';
+        renderFillPane();
+        return;
+      }
+      state.activeSlot = { kind: kind, i: i == null ? 0 : i };
+      state.pad = kind === 'op' ? 'op' : 'num';
       renderFillPane();
     },
     confirmFill: confirmFill,

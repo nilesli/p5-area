@@ -20,6 +20,8 @@
     session: null,
     teacherUnlocked: false,
     teacherExpanded: null,
+    teacherSessions: [],
+    teacherCloud: [],
     timerId: null
   };
 
@@ -42,7 +44,7 @@
   function renderAboutBodies() {
     const html = '<p>' + mdLite(P5Area.CURRICULUM_ABOUT) + '</p>';
     const extra = '<h3>計分</h3><p>初級每題 1 分，滿分 10。中級、高級每題公式 1 分＋填數 1 分，滿分 20。做錯即公布正確公式或正確填法，圖中用<strong>藍線標底、紅線標高</strong>，並加文字標籤。不設重試。單位用 cm／cm²，學生不用輸入單位，也不用計算出面積數值。</p>' +
-      '<h3>成績和私隱</h3><p>成績只保存在這部裝置的瀏覽器，<strong>換機不會同步</strong>。完整 CSV 含學號，只宜留在校內裝置；若要交校外或交 AI，請先去識別。工具：<a href="' + P5Area.DEID_TOOL_URL + '" target="_blank" rel="noopener">' + P5Area.DEID_TOOL_URL + '</a></p>' +
+      '<h3>成績和私隱</h3><p>完成 10 題後會把成績上載（學號、難度、得分、用時、每題對錯），不上載姓名或班別。本機同時保留備份；離線時會暫存，稍後再試。老師頁會優先顯示雲端紀錄。完整 CSV 含學號，只宜留在校內裝置；若要交校外或交 AI，請先去識別。工具：<a href="' + P5Area.DEID_TOOL_URL + '" target="_blank" rel="noopener">' + P5Area.DEID_TOOL_URL + '</a></p>' +
       '<div class="callout">來源：教育局《小學數學課程闡釋（第二學習階段）》（2020）對 4M2、5M1 的闡釋；《數學教育學習領域課程指引補充文件：小學數學科學習內容》（2017）。</div>';
     const start = $('#start-about-body');
     const full = $('#about-full');
@@ -587,6 +589,19 @@
     state.session = session;
     renderResults();
     showScreen('screen-results');
+    const cloudEl = $('#results-cloud');
+    if (P5Area.cloud && typeof P5Area.cloud.saveSession === 'function') {
+      P5Area.cloud.saveSession(session).then(function (res) {
+        if (!cloudEl) return;
+        if (res === 'cloud') cloudEl.textContent = '成績已上載。';
+        else if (res === 'queued') cloudEl.textContent = '暫時未能上載，已暫存本機，稍後會再試。';
+        else cloudEl.textContent = '成績已保存在本機。';
+      }).catch(function () {
+        if (cloudEl) cloudEl.textContent = '暫時未能上載，已暫存本機，稍後會再試。';
+      });
+    } else if (cloudEl) {
+      cloudEl.textContent = '成績已保存在本機。';
+    }
   }
 
   function renderResults() {
@@ -601,7 +616,8 @@
       '<p class="score-sub">' + lv.zh + '　公式選對 ' + s.formulaCorrect + '／10 題' +
       (s.fillCorrect == null ? '' : '　填數對 ' + s.fillCorrect + '／10 題') + '</p>' +
       '<p class="score-sub">完成：' + P5Area.teacher.formatHK(s.finishedAt, true) +
-      '　總用時 ' + P5Area.teacher.formatDuration(s.totalTimeSec) + '</p></div>';
+      '　總用時 ' + P5Area.teacher.formatDuration(s.totalTimeSec) + '</p>' +
+      '<p class="score-sub" id="results-cloud">成績正嘗試上載……</p></div>';
     if (tips.length) {
       html += '<div class="tips-box"><h3>這次可以再留意</h3><ul>' +
         tips.map(function (t) { return '<li>' + P5Area.teacher.esc(t) + '</li>'; }).join('') +
@@ -729,22 +745,59 @@
     };
   }
 
-  function refreshTeacher() {
-    const all = P5Area.storage.load().sessions;
+  function paintTeacher(sessions, cloudInfo) {
+    state.teacherSessions = sessions || [];
+    const all = state.teacherSessions;
     const list = P5Area.teacher.filterSessions(all, currentTeacherFilters());
     $('#teacher-table-host').innerHTML = P5Area.teacher.renderTable(list, state.teacherExpanded);
-    $('#teacher-status').textContent = '顯示 ' + list.length + ' 場練習（本機合共 ' + all.length + ' 場）。換機不會同步。';
+    const localN = P5Area.storage.load().sessions.length;
+    const cloudN = ((cloudInfo && cloudInfo.sessions) || state.teacherCloud || []).length;
+    let msg = '顯示 ' + list.length + ' 場練習（合共 ' + all.length + ' 場';
+    if (cloudInfo && cloudInfo.source === 'cloud') {
+      msg += '：雲端 ' + cloudN + ' 場，本機 ' + localN + ' 場，已合併';
+    } else if (cloudInfo && cloudInfo.error) {
+      msg += '。雲端讀取未成功，以下為本機紀錄';
+    } else {
+      msg += '：本機 ' + localN + ' 場';
+    }
+    msg += '）。';
+    $('#teacher-status').textContent = msg;
     $$('.teacher-expand', $('#teacher-table-host')).forEach(function (btn) {
       btn.addEventListener('click', function () {
         const id = btn.getAttribute('data-sid');
         state.teacherExpanded = state.teacherExpanded === id ? null : id;
-        refreshTeacher();
+        paintTeacher(state.teacherSessions, cloudInfo);
+      });
+    });
+  }
+
+  function refreshTeacher() {
+    const local = P5Area.storage.load().sessions;
+    const mergeFn = (P5Area.cloud && P5Area.cloud.mergeSessions)
+      ? P5Area.cloud.mergeSessions
+      : function (a, b) { return (a || []).concat(b || []); };
+    paintTeacher(mergeFn(local, state.teacherCloud || []), {
+      source: state.teacherCloud && state.teacherCloud.length ? 'cloud' : 'local',
+      sessions: state.teacherCloud || [],
+      error: null
+    });
+    if (!P5Area.cloud || typeof P5Area.cloud.loadSessions !== 'function') return;
+    P5Area.cloud.loadSessions(400).then(function (res) {
+      state.teacherCloud = (res && res.sessions) || [];
+      paintTeacher(mergeFn(P5Area.storage.load().sessions, state.teacherCloud), res);
+    }).catch(function (err) {
+      paintTeacher(mergeFn(P5Area.storage.load().sessions, []), {
+        source: 'none',
+        sessions: [],
+        error: String(err && err.message || 'load failed')
       });
     });
   }
 
   function exportCSV(deid) {
-    const all = P5Area.storage.load().sessions;
+    const all = (state.teacherSessions && state.teacherSessions.length)
+      ? state.teacherSessions
+      : P5Area.storage.load().sessions;
     const list = P5Area.teacher.filterSessions(all, currentTeacherFilters());
     if (!list.length) {
       $('#teacher-status').textContent = '沒有可匯出的紀錄。';
@@ -765,6 +818,9 @@
     renderAboutBodies();
     const stored = P5Area.storage.load();
     if (stored.lastStudentId) $('#student-id').value = stored.lastStudentId;
+    if (P5Area.cloud && typeof P5Area.cloud.flushPending === 'function') {
+      P5Area.cloud.flushPending().catch(function () {});
+    }
 
     $$('.level-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -821,10 +877,10 @@
     $('#btn-delete').addEventListener('click', function () {
       const list = P5Area.teacher.filterSessions(P5Area.storage.load().sessions, currentTeacherFilters());
       if (!list.length) { $('#teacher-status').textContent = '沒有可刪除的紀錄。'; return; }
-      if (!window.confirm('確定刪除現在篩選到的 ' + list.length + ' 場練習？這步不可以還原。')) return;
+      if (!window.confirm('確定刪除現在篩選到的本機紀錄（' + list.length + ' 場）？雲端紀錄不會在此刪除。這步不可以還原。')) return;
       const ids = new Set(list.map(function (s) { return s.id; }));
       const n = P5Area.storage.deleteSessions(function (s) { return ids.has(s.id); });
-      $('#teacher-status').textContent = '已刪除 ' + n + ' 場。';
+      $('#teacher-status').textContent = '已刪除 ' + n + ' 場本機紀錄。雲端紀錄不會在此刪除。';
       refreshTeacher();
     });
     $('#btn-save-code').addEventListener('click', function () {

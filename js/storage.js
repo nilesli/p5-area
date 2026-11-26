@@ -1,4 +1,4 @@
-/* 小五面積温習 · 本機儲存（無 Firebase、無雲端同步） */
+/* 小五面積温習 · 本機儲存（localStorage 備份；完成後由 cloud.js 上載） */
 (function (global) {
   const P5Area = global.P5Area = global.P5Area || {};
 

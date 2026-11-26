@@ -167,6 +167,14 @@
     return A.x < B.x + B.w && A.x + A.w > B.x && A.y < B.y + B.h && A.y + A.h > B.y;
   }
 
+  function boxGap(a, b) {
+    const gapX = (a.x + a.w <= b.x) ? b.x - (a.x + a.w) : (b.x + b.w <= a.x) ? a.x - (b.x + b.w) : 0;
+    const gapY = (a.y + a.h <= b.y) ? b.y - (a.y + a.h) : (b.y + b.h <= a.y) ? a.y - (b.y + b.h) : 0;
+    const no = (a.x + a.w <= b.x) || (b.x + b.w <= a.x) || (a.y + a.h <= b.y) || (b.y + b.h <= a.y);
+    if (!no) return 0;
+    return (gapX === 0 || gapY === 0) ? gapX + gapY : Math.hypot(gapX, gapY);
+  }
+
   function boxInView(box, pad) {
     pad = pad == null ? VIEW_PAD : pad;
     return box.x >= pad && box.y >= pad && box.x + box.w <= VW - pad && box.y + box.h <= VH - pad;
@@ -316,6 +324,36 @@
     if (extra.preferOutsideVerts && pointInPoly([box.cx, box.cy], extra.preferOutsideVerts)) {
       score += 520;
     }
+    if (extra.preferInsideVerts) {
+      const poly = extra.preferInsideVerts;
+      if (!pointInPoly([box.cx, box.cy], poly)) {
+        score += 1200;
+      } else {
+        score -= 60;
+        const corners = [
+          [box.x + 1, box.y + 1],
+          [box.x + box.w - 1, box.y + 1],
+          [box.x + 1, box.y + box.h - 1],
+          [box.x + box.w - 1, box.y + box.h - 1]
+        ];
+        for (let i = 0; i < 4; i++) {
+          if (!pointInPoly(corners[i], poly)) score += 40;
+        }
+        /* Stay a little off the sides so the height is not read as a side length. */
+        let minEdge = Infinity;
+        for (let k = 0; k < poly.length; k++) {
+          const de = distPtSeg([box.cx, box.cy], poly[k], poly[(k + 1) % poly.length]);
+          if (de < minEdge) minEdge = de;
+        }
+        if (minEdge < 18) score += (18 - minEdge) * 10;
+      }
+    }
+    if (extra.minOtherGap && boxes && boxes.length) {
+      for (i = 0; i < boxes.length; i++) {
+        const g = boxGap(box, boxes[i]);
+        if (g < extra.minOtherGap) score += 160 + (extra.minOtherGap - g) * 16;
+      }
+    }
     if (extra.flipPenalty) score += extra.flipPenalty;
     if (extra.anchorSeg) {
       const dAnchor = distPtSeg([box.cx, box.cy], extra.anchorSeg[0], extra.anchorSeg[1]);
@@ -369,6 +407,74 @@
           });
         }
       }
+    }
+    return out;
+  }
+
+  function centroidOf(verts) {
+    let x = 0, y = 0;
+    for (let i = 0; i < verts.length; i++) {
+      x += verts[i][0];
+      y += verts[i][1];
+    }
+    const n = verts.length || 1;
+    return [x / n, y / n];
+  }
+
+  /* Height length text prefers the polygon interior so it is not mistaken for a side. */
+  function heightCandidates(d, compact, verts) {
+    const out = [];
+    const a = d._a, b = d._b;
+    const size = d._size;
+    const ownSegs = [[a, b]];
+    const C = centroidOf(verts);
+    const midH = mid(a, b);
+    let inward = sub(C, midH);
+    const iLen = Math.hypot(inward[0], inward[1]);
+    if (iLen < 1.5) {
+      inward = mul(d._n, -1);
+      if (!pointInPoly(add(midH, mul(inward, 10)), verts)) inward = d._n.slice();
+      inward = norm(inward);
+    } else {
+      inward = mul(inward, 1 / iLen);
+    }
+    const stepped = add(midH, mul(inward, compact ? 16 : 22));
+    const prefer = pointInPoly(stepped, verts) ? stepped : C;
+    const seen = {};
+    function push(pos) {
+      const key = Math.round(pos[0]) + ',' + Math.round(pos[1]);
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push({
+        pos: pos,
+        box: boxFromCenter(pos[0], pos[1], size),
+        prefer: prefer,
+        ownSegs: ownSegs
+      });
+    }
+    const ts = compact
+      ? [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82]
+      : [0.5, 0.4, 0.6, 0.32, 0.68, 0.24, 0.76, 0.16, 0.84, 0.12, 0.88];
+    const offs = compact
+      ? [10, 14, 18, 22, 26, 32, 40, 50, 62, 8, 74]
+      : [12, 16, 20, 24, 28, 34, 42, 52, 64, 80, 10, 96, 112];
+    for (let i = 0; i < ts.length; i++) {
+      const t = ts[i];
+      const p0 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      for (let j = 0; j < offs.length; j++) {
+        push(add(p0, mul(inward, offs[j])));
+      }
+    }
+    for (let k = 1; k <= 14; k++) {
+      const t = k / 12;
+      push([midH[0] + (C[0] - midH[0]) * t, midH[1] + (C[1] - midH[1]) * t]);
+    }
+    const alongH = norm(sub(b, a));
+    const sideSteps = compact ? [0, 8, -8, 16, -16] : [0, 10, -10, 20, -20, 28, -28];
+    for (let s = 0; s < sideSteps.length; s++) {
+      const lateral = mul(alongH, sideSteps[s]);
+      push(add(C, lateral));
+      push(add(add(C, mul(inward, compact ? 8 : 12)), lateral));
     }
     return out;
   }
@@ -568,14 +674,21 @@
 
     function candidatesFor(d) {
       if (d._inline) {
-        const prefer = add(mid(d._a, d._b), mul(d._n, compact ? 14 : 18));
-        const cands = alongCandidates(d._a, d._b, d._n, d._size, prefer, [[d._a, d._b]], compact);
         if (d._isHeight) {
+          const cands = heightCandidates(d, compact, verts);
+          const exterior = !!(geo.heightSeg && geo.heightSeg.exterior);
           cands.forEach(function (c) {
-            c.extra = { anchorSeg: [d._a, d._b], anchorMax: compact ? 40 : 48 };
+            c.extra = {
+              anchorSeg: [d._a, d._b],
+              anchorMax: exterior ? 160 : 88,
+              preferInsideVerts: verts,
+              minOtherGap: 28
+            };
           });
+          return cands;
         }
-        return cands;
+        const prefer = add(mid(d._a, d._b), mul(d._n, compact ? 14 : 18));
+        return alongCandidates(d._a, d._b, d._n, d._size, prefer, [[d._a, d._b]], compact);
       }
       const n = d._prefN || d._n;
       const prefer = add(mid(d._a, d._b), mul(n, (d._prefOffset || (compact ? 20 : 26)) + 14));
@@ -686,10 +799,15 @@
 
     /* Record layout for tests / audit. */
     const collisions = findCollisions(layoutLabels, allSegsForAudit, labelGap, lineGap);
+    layoutLabels.forEach(function (L) {
+      L.inside = pointInPoly([L.box.cx, L.box.cy], verts);
+    });
+    const heightLabs = layoutLabels.filter(function (L) { return L.role === '高'; });
     P5Area.svg.lastLayout = {
       labels: layoutLabels,
       collisions: collisions,
-      viewBox: [VW, VH]
+      viewBox: [VW, VH],
+      heightInside: heightLabs.length === 0 || heightLabs.every(function (L) { return L.inside; })
     };
     return svg;
   }

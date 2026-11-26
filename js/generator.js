@@ -1203,8 +1203,39 @@
       if (count >= 2) pushAux('diagonal', 'aux');
     }
 
-    q.distractors = added.map(function (d) {
-      return { type: d.type, value: d.value };
+    pruneAmbiguousDashed(q);
+    /* If a close-to-height extra was dropped, try one more non-conflicting aux. */
+    if (added.length < count) {
+      /* no-op: added may still list a pruned item; refresh from remaining dims */
+    }
+    const remainingVals = {};
+    (geo.dimensions || []).forEach(function (d) {
+      if (d.isDistractor) remainingVals[d.value] = true;
+    });
+    const keptAdded = added.filter(function (d) { return remainingVals[d.value]; });
+    let guard = 0;
+    while (keptAdded.length < count && guard < 8) {
+      guard++;
+      const forbidNow = forbidden.concat(keptAdded.map(function (d) { return d.value; }));
+      const gen = genericAux(q, forbidNow, rnd) || farFromHeightAux(q, forbidNow, rnd);
+      if (!gen) break;
+      geo.extras.push({ a: gen.line.a, b: gen.line.b });
+      geo.dimensions.push(gen.dim);
+      keptAdded.push(gen);
+      pruneAmbiguousDashed(q);
+      const still = {};
+      (geo.dimensions || []).forEach(function (d) {
+        if (d.isDistractor) still[d.value] = true;
+      });
+      if (!still[gen.value]) {
+        keptAdded.pop();
+      }
+    }
+    q.distractors = (geo.dimensions || []).filter(function (d) {
+      return d.isDistractor;
+    }).map(function (d) {
+      const match = keptAdded.filter(function (a) { return a.value === d.value; })[0];
+      return { type: (match && match.type) || 'aux', value: d.value };
     });
     return q;
   }
@@ -1354,6 +1385,7 @@
     /* Don't use a fake length that doesn't match the drawn segment — compute a segment of the true integer length in cm units. */
     const endTrue = add(start, mul(dir, val));
     /* This may stick far out; still geometrically honest. */
+    if (closeToHeight(q, start, endTrue)) return null;
     return {
       type: 'aux',
       value: val,
@@ -1362,11 +1394,119 @@
     };
   }
 
+  function pointToSegDist(p, a, b) {
+    const ab = sub(b, a);
+    const L2 = ab[0] * ab[0] + ab[1] * ab[1];
+    if (L2 < 1e-12) return dist(p, a);
+    let t = (dot(sub(p, a), ab)) / L2;
+    t = Math.max(0, Math.min(1, t));
+    return dist(p, add(a, mul(ab, t)));
+  }
+
+  /* Two dashed segments whose labels would be hard to tell apart
+     (nearly the same line, or sharing a vertex at a tight angle). */
+  function dashedSegsAmbiguous(a, b, c, d) {
+    const lenAB = dist(a, b);
+    const lenCD = dist(c, d);
+    if (lenAB < 0.4 || lenCD < 0.4) return false;
+    const u = mul(sub(b, a), 1 / lenAB);
+    const v = mul(sub(d, c), 1 / lenCD);
+    const par = Math.abs(dot(u, v));
+    const share = dist(a, c) < 0.35 || dist(a, d) < 0.35 ||
+      dist(b, c) < 0.35 || dist(b, d) < 0.35;
+    function at(p, q, t) { return add(p, mul(sub(q, p), t)); }
+    const dBody = Math.min(
+      pointToSegDist(at(a, b, 0.5), c, d),
+      pointToSegDist(at(a, b, 1 / 3), c, d),
+      pointToSegDist(at(a, b, 2 / 3), c, d),
+      pointToSegDist(at(c, d, 0.5), a, b),
+      pointToSegDist(at(c, d, 1 / 3), a, b),
+      pointToSegDist(at(c, d, 2 / 3), a, b)
+    );
+    if (share && par >= 0.88) return true;
+    if (par >= 0.92 && dBody <= 1.6) return true;
+    if (dBody <= 1.0 && par >= 0.8) return true;
+    return false;
+  }
+
   function closeToHeight(q, a, b) {
-    const h = q.geometry.heightSeg;
+    const h = q.geometry && q.geometry.heightSeg;
     if (!h) return false;
     function near(p, qpt) { return dist(p, qpt) < 0.25; }
-    return (near(a, h.a) && near(b, h.b)) || (near(a, h.b) && near(b, h.a));
+    if ((near(a, h.a) && near(b, h.b)) || (near(a, h.b) && near(b, h.a))) return true;
+    return dashedSegsAmbiguous(a, b, h.a, h.b);
+  }
+
+  function dimMatchesSeg(d, a, b) {
+    if (!d || !d._a || !d._b) return false;
+    function near(p, qpt) { return dist(p, qpt) < 0.3; }
+    return (near(d._a, a) && near(d._b, b)) || (near(d._a, b) && near(d._b, a));
+  }
+
+  function farFromHeightAux(q, forbidden, rnd) {
+    const v = q.geometry.vertices;
+    const h = q.geometry.heightSeg;
+    if (!h) return null;
+    const val = unusedInt(rnd, forbidden, 3, 18);
+    const midH = mid(h.a, h.b);
+    let best = v[0], bestD = -1;
+    v.forEach(function (pt) {
+      const d0 = dist(pt, midH);
+      if (d0 > bestD) { bestD = d0; best = pt; }
+    });
+    const away = norm(sub(best, midH));
+    const perp = [-away[1], away[0]];
+    const dirs = [away, perp, mul(perp, -1), mul(away, -1)];
+    for (let i = 0; i < dirs.length; i++) {
+      const start = add(best, mul(dirs[i], 0.45));
+      const end = add(start, mul(dirs[i], val));
+      if (closeToHeight(q, start, end)) continue;
+      return {
+        type: 'aux',
+        value: val,
+        line: { a: start, b: end },
+        dim: dimForLine(start, end, val, '', v)
+      };
+    }
+    return null;
+  }
+
+  /* Drop a non-height dashed extra (and its label) when it sits so close
+     to the height — or to another dashed extra — that 13 vs 14 is ambiguous. */
+  function pruneAmbiguousDashed(q) {
+    const geo = q && q.geometry;
+    if (!geo) return q;
+    const h = geo.heightSeg;
+    const extras = geo.extras || [];
+    if (!extras.length) return q;
+    const dropped = [];
+    const kept = [];
+    extras.forEach(function (e) {
+      if (!e || !e.a || !e.b) { kept.push(e); return; }
+      if (h && dashedSegsAmbiguous(e.a, e.b, h.a, h.b)) dropped.push(e);
+      else kept.push(e);
+    });
+    const kept2 = [];
+    kept.forEach(function (e) {
+      const clash = kept2.some(function (k) {
+        return dashedSegsAmbiguous(e.a, e.b, k.a, k.b);
+      });
+      if (clash) dropped.push(e);
+      else kept2.push(e);
+    });
+    if (!dropped.length) return q;
+    geo.extras = kept2;
+    geo.dimensions = (geo.dimensions || []).filter(function (d) {
+      return !dropped.some(function (e) { return dimMatchesSeg(d, e.a, e.b); });
+    });
+    if (q.distractors && q.distractors.length) {
+      const remaining = {};
+      (geo.dimensions || []).forEach(function (d) {
+        if (d.isDistractor) remaining[d.value] = true;
+      });
+      q.distractors = q.distractors.filter(function (d) { return remaining[d.value]; });
+    }
+    return q;
   }
 
   function morphsFor(shape, level) {
@@ -1538,6 +1678,8 @@
     makeShape: makeShape,
     makeIdentifyShape: makeIdentifyShape,
     addDistractors: addDistractors,
+    pruneAmbiguousDashed: pruneAmbiguousDashed,
+    dashedSegsAmbiguous: dashedSegsAmbiguous,
     signatureOf: signatureOf
   };
 

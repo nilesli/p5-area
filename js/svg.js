@@ -133,6 +133,23 @@
     return (near(d.a, seg.a) && near(d.b, seg.b)) || (near(d.a, seg.b) && near(d.b, seg.a));
   }
 
+  function pointOnSeg(p, a, b, tol) {
+    tol = tol == null ? 0.15 : tol;
+    return distPtSeg(p, a, b) < tol;
+  }
+
+  /* True when the altitude already coincides with a solid polygon side. */
+  function heightIsPolygonSide(geo) {
+    const h = geo && geo.heightSeg;
+    const verts = geo && geo.vertices;
+    if (!h || !verts || verts.length < 2) return false;
+    for (let i = 0; i < verts.length; i++) {
+      const A = verts[i], B = verts[(i + 1) % verts.length];
+      if (pointOnSeg(h.a, A, B, 0.15) && pointOnSeg(h.b, A, B, 0.15)) return true;
+    }
+    return false;
+  }
+
   function measureText(str, fontSize) {
     let w = 0;
     for (let i = 0; i < str.length; i++) {
@@ -187,6 +204,13 @@
     let t = ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / L2;
     t = Math.max(0, Math.min(1, t));
     return len(sub(p, [a[0] + t * ab[0], a[1] + t * ab[1]]));
+  }
+
+  /* Two segments run along the same line (e.g. a right-trapezium leg that is also the height). */
+  function segsCoincide(a, b, c, d, tol) {
+    tol = tol == null ? 6 : tol;
+    return (distPtSeg(a, c, d) < tol && distPtSeg(b, c, d) < tol) ||
+      (distPtSeg(c, a, b) < tol && distPtSeg(d, a, b) < tol);
   }
 
   function pointInRect(p, box) {
@@ -358,7 +382,55 @@
     if (extra.anchorSeg) {
       const dAnchor = distPtSeg([box.cx, box.cy], extra.anchorSeg[0], extra.anchorSeg[1]);
       const maxD = extra.anchorMax != null ? extra.anchorMax : 46;
-      if (dAnchor > maxD) score += (dAnchor - maxD) * 14;
+      if (dAnchor > maxD) {
+        if (extra.anchorHard !== false) {
+          return { hard: true, score: 1.5e8 + (dAnchor - maxD) * 20 };
+        }
+        score += (dAnchor - maxD) * 14;
+      } else {
+        score += dAnchor * 0.4;
+      }
+      if (extra.polyVerts) {
+        const pt = [box.cx, box.cy];
+        const poly = extra.polyVerts;
+        let minForeign = Infinity;
+        for (let k = 0; k < poly.length; k++) {
+          const ea = poly[k];
+          const eb = poly[(k + 1) % poly.length];
+          if (segsCoincide(ea, eb, extra.anchorSeg[0], extra.anchorSeg[1], 6)) continue;
+          const skips = extra.skipSegs || [];
+          let skipped = false;
+          for (let si = 0; si < skips.length; si++) {
+            if (segsCoincide(ea, eb, skips[si][0], skips[si][1], 6)) {
+              skipped = true;
+              break;
+            }
+          }
+          if (skipped) continue;
+          const de = distPtSeg(pt, ea, eb);
+          if (de < minForeign) minForeign = de;
+        }
+        const more = extra.foreignSegs || [];
+        const skips = extra.skipSegs || [];
+        for (let fi = 0; fi < more.length; fi++) {
+          const fs = more[fi];
+          if (segsCoincide(fs[0], fs[1], extra.anchorSeg[0], extra.anchorSeg[1], 6)) continue;
+          let skipped = false;
+          for (let si = 0; si < skips.length; si++) {
+            if (segsCoincide(fs[0], fs[1], skips[si][0], skips[si][1], 6)) { skipped = true; break; }
+          }
+          if (skipped) continue;
+          const de = distPtSeg(pt, fs[0], fs[1]);
+          if (de < minForeign) minForeign = de;
+        }
+        if (minForeign < Infinity) {
+          /* Closer to another edge/bracket than to its own segment looks like a base label. */
+          if (minForeign < dAnchor) {
+            return { hard: true, score: 2e8 + (dAnchor - minForeign) * 20 };
+          }
+          if (minForeign < dAnchor + 12) score += (dAnchor + 12 - minForeign) * 10;
+        }
+      }
     }
     return { hard: score >= 180, score: score };
   }
@@ -384,10 +456,10 @@
 
   function alongCandidates(a, b, n, size, prefer, ownSegs, compact) {
     const out = [];
-    const ts = [0.50, 0.38, 0.62, 0.28, 0.72, 0.22, 0.78, 0.16, 0.84, 0.44, 0.56, 0.34, 0.66, 0.12, 0.88, -0.08, 1.08, -0.18, 1.18];
+    const ts = [0.50, 0.38, 0.62, 0.28, 0.72, 0.22, 0.78, 0.16, 0.84, 0.44, 0.56, 0.34, 0.66, 0.12, 0.88];
     const dists = compact
-      ? [10, 13, 16, 20, 24, 28, 34, 40, 48, 56, 68, 8]
-      : [14, 18, 12, 22, 26, 32, 38, 46, 54, 64, 76, 88, 10];
+      ? [10, 13, 16, 20, 24, 28, 34, 8]
+      : [10, 14, 18, 12, 22, 26, 32, 38];
     const signs = [1, -1];
     let ti, di, si;
     for (ti = 0; ti < ts.length; ti++) {
@@ -465,16 +537,25 @@
         push(add(p0, mul(inward, offs[j])));
       }
     }
-    for (let k = 1; k <= 14; k++) {
-      const t = k / 12;
-      push([midH[0] + (C[0] - midH[0]) * t, midH[1] + (C[1] - midH[1]) * t]);
+    /* Stay near the altitude; do not walk all the way to the centroid
+       (that parks the height length next to a mid-shape diagonal). */
+    const maxWalk = compact ? 28 : 36;
+    const walkSteps = [0.2, 0.35, 0.5, 0.7, 1];
+    for (let w = 0; w < walkSteps.length; w++) {
+      push(add(midH, mul(inward, maxWalk * walkSteps[w])));
     }
     const alongH = norm(sub(b, a));
     const sideSteps = compact ? [0, 8, -8, 16, -16] : [0, 10, -10, 20, -20, 28, -28];
+    const dCentroid = distPtSeg(C, a, b);
+    const nearC = dCentroid <= maxWalk + 4;
     for (let s = 0; s < sideSteps.length; s++) {
       const lateral = mul(alongH, sideSteps[s]);
-      push(add(C, lateral));
-      push(add(add(C, mul(inward, compact ? 8 : 12)), lateral));
+      if (nearC) {
+        push(add(C, lateral));
+        push(add(add(C, mul(inward, compact ? 8 : 12)), lateral));
+      } else {
+        push(add(add(midH, mul(inward, compact ? 16 : 22)), lateral));
+      }
     }
     return out;
   }
@@ -559,7 +640,10 @@
       }));
     }
 
-    if (geo.heightSeg) {
+    const heightOnSide = heightIsPolygonSide(geo);
+    if (geo.heightSeg && (reveal || !heightOnSide)) {
+      /* Answering: do not dash a second altitude on top of a solid side.
+         Reveal: still paint that side red as the height. */
       const hAttrs = reveal
         ? { stroke: C.COLOR_HEIGHT, 'stroke-width': '4', 'stroke-linecap': 'round', 'class': C.CLASS_HEIGHT }
         : { stroke: C.COLOR_HEIGHT_NEUTRAL, 'stroke-width': '2.2', 'stroke-dasharray': '7 5', 'stroke-linecap': 'round' };
@@ -608,8 +692,10 @@
         else if ((geo.bases || []).some(function (b) { return isSameSeg(d, b); })) local.role = '底';
       }
       local._isHeight = isSameSeg(d, geo.heightSeg);
+      local._heightOnSide = !!(local._isHeight && heightOnSide);
       /* Interior auxiliaries (not on a polygon edge): mid-edge in-shape marks, no bracket.
-         Height already has a visible altitude line, so we also label it without a second bracket. */
+         Height already has a visible altitude line, so we also label it without a second bracket.
+         When the height is a solid side, the number sits outside that side (no extra bracket). */
       local._inline = !!(d.isDistractor && d.inline !== false && !d.onEdge) || local._isHeight;
       local._label = formatDimLabel(local, showRoles);
       local._font = compact
@@ -674,13 +760,30 @@
 
     function candidatesFor(d) {
       if (d._inline) {
+        if (d._isHeight && d._heightOnSide) {
+          /* Label the solid side from the outside (e.g. 6 cm to the left of a left leg). */
+          const prefer = add(mid(d._a, d._b), mul(d._n, compact ? 16 : 20));
+          const cands = alongCandidates(d._a, d._b, d._n, d._size, prefer, [[d._a, d._b]], compact)
+            .filter(function (c) { return c.sign > 0; });
+          cands.forEach(function (c) {
+            c.extra = {
+              anchorSeg: [d._a, d._b],
+              anchorMax: compact ? 32 : 40,
+              anchorHard: true,
+              preferOutsideVerts: verts,
+              minOtherGap: 22
+            };
+          });
+          return cands;
+        }
         if (d._isHeight) {
           const cands = heightCandidates(d, compact, verts);
           const exterior = !!(geo.heightSeg && geo.heightSeg.exterior);
           cands.forEach(function (c) {
             c.extra = {
               anchorSeg: [d._a, d._b],
-              anchorMax: exterior ? 160 : 88,
+              anchorMax: exterior ? 140 : 40,
+              anchorHard: true,
               preferInsideVerts: verts,
               minOtherGap: 28
             };
@@ -688,7 +791,25 @@
           return cands;
         }
         const prefer = add(mid(d._a, d._b), mul(d._n, compact ? 14 : 18));
-        return alongCandidates(d._a, d._b, d._n, d._size, prefer, [[d._a, d._b]], compact);
+        const cands = alongCandidates(d._a, d._b, d._n, d._size, prefer, [[d._a, d._b]], compact);
+        const heightView = geo.heightSeg ? [T(geo.heightSeg.a), T(geo.heightSeg.b)] : null;
+        const foreignSegs = [];
+        rawDims.forEach(function (od) {
+          if (od === d) return;
+          foreignSegs.push([od._a, od._b]);
+          if (od._prefBracket) foreignSegs.push([od._prefBracket.a2, od._prefBracket.b2]);
+        });
+        cands.forEach(function (c) {
+          c.extra = {
+            anchorSeg: [d._a, d._b],
+            anchorMax: compact ? 32 : 36,
+            anchorHard: true,
+            polyVerts: verts,
+            skipSegs: heightView ? [heightView] : [],
+            foreignSegs: foreignSegs
+          };
+        });
+        return cands;
       }
       const n = d._prefN || d._n;
       const prefer = add(mid(d._a, d._b), mul(n, (d._prefOffset || (compact ? 20 : 26)) + 14));
@@ -722,8 +843,15 @@
       return out;
     }
 
+    function isMisleading(d, picked) {
+      /* Inline aux with no honest pocket: drop the number rather than park it on another edge. */
+      return !!(d && d._inline && !d._isHeight && picked && picked._ev &&
+        picked._ev.hard && picked._ev.score >= 1.5e8);
+    }
+
     function applyPick(idx, picked) {
-      placements[idx] = picked;
+      const d = rawDims[idx];
+      placements[idx] = isMisleading(d, picked) ? null : picked;
     }
 
     order.forEach(function (idx) {
@@ -769,6 +897,7 @@
         role: d.role || '',
         box: p.box,
         isDistractor: !!d.isDistractor,
+        inline: !!d._inline,
         ownSegs: p.ownSegs || []
       });
     });
@@ -807,6 +936,8 @@
       labels: layoutLabels,
       collisions: collisions,
       viewBox: [VW, VH],
+      verts: verts,
+      heightOnSide: heightOnSide,
       heightInside: heightLabs.length === 0 || heightLabs.every(function (L) { return L.inside; })
     };
     return svg;

@@ -515,58 +515,40 @@
       ];
     }
     const A = verts[0], B = verts[1], C = verts[2], D = verts[3];
-    /* Height from a convenient point on the top down to the bottom line (or extension). */
-    let hx = D[0];
-    if (isRight && leftOff === 0 && bottom >= top) hx = D[0]; /* vertical left */
-    else if (isRight && rightOff === 0 && bottom >= top) hx = C[0];
-    else hx = (D[0] + C[0]) / 2;
-    /* Prefer a foot that lands on the longer base segment. */
     const botMin = Math.min(A[0], B[0]);
     const botMax = Math.max(A[0], B[0]);
-    if (hx < botMin || hx > botMax) {
-      hx = Math.min(botMax, Math.max(botMin, (A[0] + B[0]) / 2));
-    }
-    const topY = height;
-    const foot = [hx, 0];
-    const apexH = [hx, topY];
-    /* If hx is not on the top edge, drop from a point on the top edge. */
-    const topMin = Math.min(D[0], C[0]);
-    const topMax = Math.max(D[0], C[0]);
-    let heightTop = apexH;
-    if (hx < topMin - 0.05 || hx > topMax + 0.05) {
-      /* Use an interior x that is on both, or extend. For long-top, foot may be under the overhang — exterior relative to short bottom. */
-      heightTop = [Math.min(topMax, Math.max(topMin, hx)), topY];
-    }
-    /* Rebuild height as perpendicular between the two parallels (horizontal here). */
-    const midTopX = (D[0] + C[0]) / 2;
-    let footX = midTopX;
-    const onBottom = footX >= botMin - 1e-9 && footX <= botMax + 1e-9;
-    const exterior = !onBottom;
-    if (exterior) {
-      /* keep mid of top, extend bottom */
+    let heightSeg;
+    if (isRight && Math.abs(leftOff) < 1e-9) {
+      /* Vertical left leg is already the height — do not drop a second dashed altitude. */
+      heightSeg = { a: D, b: A, exterior: false };
+    } else if (isRight && Math.abs(rightOff) < 1e-9) {
+      heightSeg = { a: C, b: B, exterior: false };
     } else {
-      footX = midTopX;
-    }
-    const hTop = [footX, height];
-    const hFoot = [footX, 0];
-    let heightSeg = { a: hTop, b: hFoot, exterior: exterior };
-    if (exterior) {
-      const closer = Math.abs(footX - A[0]) < Math.abs(footX - B[0]) ? A : B;
-      heightSeg.extendBase = [closer, hFoot];
+      /* Interior (or exterior, for a long top) altitude between the two parallels. */
+      const midTopX = (D[0] + C[0]) / 2;
+      const footX = midTopX;
+      const onBottom = footX >= botMin - 1e-9 && footX <= botMax + 1e-9;
+      const exterior = !onBottom;
+      const hTop = [footX, height];
+      const hFoot = [footX, 0];
+      heightSeg = { a: hTop, b: hFoot, exterior: exterior };
+      if (exterior) {
+        const closer = Math.abs(footX - A[0]) < Math.abs(footX - B[0]) ? A : B;
+        heightSeg.extendBase = [closer, hFoot];
+      }
     }
 
     if (tilt) {
       const ang = pick(rnd, [-20, -16, 16, 20, 14, -14]);
       const o = centroid(verts);
+      const ext = !!(heightSeg && heightSeg.exterior);
+      const extendBefore = heightSeg.extendBase ? heightSeg.extendBase[0] : null;
       verts = rotatePts(verts, ang, o);
-      const hsA = rotatePt(hTop, ang, o);
-      const hsB = rotatePt(hFoot, ang, o);
-      heightSeg = { a: hsA, b: hsB, exterior: exterior };
-      if (exterior) {
-        heightSeg.extendBase = [
-          rotatePt(heightSeg.extendBase ? closerPointBefore(A, B, hFoot) : A, ang, o),
-          hsB
-        ];
+      const hsA = rotatePt(heightSeg.a, ang, o);
+      const hsB = rotatePt(heightSeg.b, ang, o);
+      heightSeg = { a: hsA, b: hsB, exterior: ext };
+      if (ext && extendBefore) {
+        heightSeg.extendBase = [rotatePt(extendBefore, ang, o), hsB];
       }
     }
 
@@ -1338,6 +1320,66 @@
     return null;
   }
 
+  /* Honest dashed extra: both ends on the polygon boundary, integer length. */
+  function anyIntegerBoundaryChord(q, forbidden, rnd) {
+    const v = q.geometry.vertices;
+    const n = v.length;
+    function accept(found) {
+      if (!found) return null;
+      if (closeToHeight(q, found.a, found.b)) return null;
+      if (isEdge(found.a, found.b, v)) return null;
+      return {
+        type: 'aux',
+        value: found.value,
+        line: { a: found.a, b: found.b },
+        dim: dimForLine(found.a, found.b, found.value, '', v)
+      };
+    }
+    const vorder = [];
+    for (let i = 0; i < n; i++) vorder.push(i);
+    shuffle(vorder, rnd);
+    for (let i = 0; i < vorder.length; i++) {
+      const vi = vorder[i];
+      const elist = [];
+      for (let e = 0; e < n; e++) {
+        if (e === vi || (e + 1) % n === vi) continue;
+        elist.push(e);
+      }
+      if (q.shape === 'trapezium') {
+        elist.sort(function (a, b) { return (b === 0 ? 1 : 0) - (a === 0 ? 1 : 0); });
+      } else {
+        shuffle(elist, rnd);
+      }
+      for (let j = 0; j < elist.length; j++) {
+        const e = elist[j];
+        const got = accept(integerAuxLine(v[vi], v[e], v[(e + 1) % n], forbidden, rnd));
+        if (got) return got;
+      }
+    }
+    const ts = [0.25, 0.5, 0.75, 0.2, 0.4, 0.6, 0.8, 1 / 3, 2 / 3];
+    const eorder = [];
+    for (let i = 0; i < n; i++) eorder.push(i);
+    shuffle(eorder, rnd);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < eorder.length; i++) {
+        const e1 = eorder[i];
+        const P1 = v[e1], Q1 = v[(e1 + 1) % n];
+        for (let ti = 0; ti < ts.length; ti++) {
+          const S = add(P1, mul(sub(Q1, P1), ts[ti]));
+          for (let e2 = 0; e2 < n; e2++) {
+            if (e2 === e1) continue;
+            const adj = (e2 === (e1 + 1) % n || e1 === (e2 + 1) % n);
+            if (pass === 0 && adj) continue;
+            if (pass === 1 && !adj) continue;
+            const got = accept(integerAuxLine(S, v[e2], v[(e2 + 1) % n], forbidden, rnd));
+            if (got) return got;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   function genericAux(q, forbidden, rnd) {
     const v = q.geometry.vertices;
     const n = v.length;
@@ -1362,36 +1404,40 @@
           };
         }
       } else {
-        const P = v[(vi + 2) % n];
-        const Q = v[(vi + 3) % n];
-        const found = integerAuxLine(V, P, Q, forbidden, rnd);
-        if (found) {
+        /* Every edge not incident to V (a quad has two). Prefer the bottom of a trapezium. */
+        const edgeList = [];
+        for (let e = 0; e < n; e++) {
+          const P = v[e], Q = v[(e + 1) % n];
+          if (e === vi || (e + 1) % n === vi) continue;
+          edgeList.push([P, Q, e]);
+        }
+        if (q.shape === 'trapezium') {
+          edgeList.sort(function (E1, E2) {
+            function isBottom(E) { return E[2] === 0; }
+            return (isBottom(E2) ? 1 : 0) - (isBottom(E1) ? 1 : 0);
+          });
+        }
+        let kept = null;
+        for (let ei = 0; ei < edgeList.length; ei++) {
+          const P = edgeList[ei][0], Q = edgeList[ei][1];
+          const found = integerAuxLine(V, P, Q, forbidden, rnd);
+          if (!found) continue;
           if (closeToHeight(q, found.a, found.b)) continue;
+          kept = found;
+          break;
+        }
+        if (kept) {
           return {
             type: 'aux',
-            value: found.value,
-            line: { a: found.a, b: found.b },
-            dim: dimForLine(found.a, found.b, found.value, '', v)
+            value: kept.value,
+            line: { a: kept.a, b: kept.b },
+            dim: dimForLine(kept.a, kept.b, kept.value, '', v)
           };
         }
       }
     }
-    /* Last resort: a labelled integer near a mid-edge offset tick (still a visible segment). */
-    const val = unusedInt(rnd, forbidden, 3, 18);
-    const A = v[0];
-    const dir = norm(perp(sub(v[1], v[0])));
-    const start = add(A, mul(norm(sub(v[n - 1], A)), 0.3));
-    const end = add(start, mul(dir, val * 0.35));
-    /* Don't use a fake length that doesn't match the drawn segment — compute a segment of the true integer length in cm units. */
-    const endTrue = add(start, mul(dir, val));
-    /* This may stick far out; still geometrically honest. */
-    if (closeToHeight(q, start, endTrue)) return null;
-    return {
-      type: 'aux',
-      value: val,
-      line: { a: start, b: endTrue },
-      dim: dimForLine(start, endTrue, val, '', v)
-    };
+    /* No floating stubs: try a boundary-to-boundary integer chord, else give up. */
+    return anyIntegerBoundaryChord(q, forbidden, rnd);
   }
 
   function pointToSegDist(p, a, b) {
@@ -1447,28 +1493,27 @@
     const v = q.geometry.vertices;
     const h = q.geometry.heightSeg;
     if (!h) return null;
-    const val = unusedInt(rnd, forbidden, 3, 18);
+    const n = v.length;
     const midH = mid(h.a, h.b);
-    let best = v[0], bestD = -1;
-    v.forEach(function (pt) {
-      const d0 = dist(pt, midH);
-      if (d0 > bestD) { bestD = d0; best = pt; }
-    });
-    const away = norm(sub(best, midH));
-    const perp = [-away[1], away[0]];
-    const dirs = [away, perp, mul(perp, -1), mul(away, -1)];
-    for (let i = 0; i < dirs.length; i++) {
-      const start = add(best, mul(dirs[i], 0.45));
-      const end = add(start, mul(dirs[i], val));
-      if (closeToHeight(q, start, end)) continue;
-      return {
-        type: 'aux',
-        value: val,
-        line: { a: start, b: end },
-        dim: dimForLine(start, end, val, '', v)
-      };
+    const order = v.map(function (pt, i) { return { pt: pt, i: i, d: dist(pt, midH) }; })
+      .sort(function (a, b) { return b.d - a.d; });
+    for (let oi = 0; oi < order.length; oi++) {
+      const vi = order[oi].i;
+      const V = order[oi].pt;
+      for (let e = 0; e < n; e++) {
+        if (e === vi || (e + 1) % n === vi) continue;
+        const found = integerAuxLine(V, v[e], v[(e + 1) % n], forbidden, rnd);
+        if (!found) continue;
+        if (closeToHeight(q, found.a, found.b)) continue;
+        return {
+          type: 'aux',
+          value: found.value,
+          line: { a: found.a, b: found.b },
+          dim: dimForLine(found.a, found.b, found.value, '', v)
+        };
+      }
     }
-    return null;
+    return anyIntegerBoundaryChord(q, forbidden, rnd);
   }
 
   /* Drop a non-height dashed extra (and its label) when it sits so close
@@ -1640,6 +1685,7 @@
         if (wantIdentify) morphOpts.identifySides = true;
         q = generateQuestion(shape, level, rnd, morphOpts);
         if (wantIdentify && (!q || !q.identifySides)) continue;
+        if (distractorPlan && !q.identifySides && (q.distractors || []).length !== distractorPlan[i]) continue;
         if (!validateQuestion(q)) continue;
         if (used.has(q.signature)) continue;
         if (prev && prev.shape === shape && (prev.morph === q.morph || prev.signature === q.signature)) continue;

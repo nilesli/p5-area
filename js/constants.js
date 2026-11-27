@@ -2,7 +2,7 @@
 (function (global) {
   const P5Area = global.P5Area = global.P5Area || {};
 
-  P5Area.VERSION = '20261126a6';
+  P5Area.VERSION = '20261127a7';
   P5Area.STORAGE_KEY = 'p5area_v1';
   P5Area.SESSION_SIZE = 10;
   P5Area.UNIT = 'cm';

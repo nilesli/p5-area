@@ -84,7 +84,8 @@
   function teacherCodeMatches(input) {
     const state = load();
     const want = String(state.teacherCode || P5Area.DEFAULT_TEACHER_CODE).trim();
-    const got = String(input || '').trim() || P5Area.DEFAULT_TEACHER_CODE;
+    const got = String(input || '').trim();
+    if (!got) return false;
     return got === want;
   }
 
